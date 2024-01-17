@@ -153,7 +153,7 @@ def main(vcfg):
 
         # Save results in a json file.
         if vcfg['save_results']:
-
+            print('save_json', save_json)
             # Load existing results
             if os.path.exists(save_json):
                 with open(save_json, 'r') as f:
