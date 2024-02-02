@@ -16,8 +16,10 @@ dataset:
 
 train:
   # folders
-  exp_folder: exps
-  train_dir: ${root_dir}/${train.exp_folder}/${train.task}-${train.agent}-n${train.n_demos}-train
+  exp_folder: exps 
+  train_dir: ${root_dir}/${train.exp_folder}/multi-language-conditioned-${train.agent}-n${train.n_demos}-calib # 'multi-language-conditioned'
+  
+
   data_dir: ${root_dir}/data
 
   # task configs
@@ -53,12 +55,10 @@ wandb:
     offline: False
   saver:
     upload: False
-    monitor: 'val_loss'
-
-
+    monitor: 'calib/loss' #'val_loss'
 
 calibration:
-  enabled: False
+  enabled: True
   datasets_type: 'single'
   training: True
   calib_type: temperature
@@ -67,6 +67,11 @@ calibration:
   calib_trans_lr: 0.1
   use_hard_temp: False
   hard_temp: 1
-
+  
+  n_demos: 100
+  n_steps: 20000 #100 #1000 #201000 # use 601000 for multi-task models
+  
+  # save_steps should be smaller than n_steps
+  save_steps: [100, 1000, 2000, 3000, 4000, 5000, 7000, 10000]
   scaler_log_root: ${root_dir}/data/scalers
   scaler_log_name: ${train.task}-${train.agent}-n${train.n_demos}-calib

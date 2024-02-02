@@ -15,11 +15,15 @@ from cliport.models.streams.two_stream_transport import TwoStreamTransport
 from cliport.models.streams.two_stream_attention import TwoStreamAttentionLat
 from cliport.models.streams.two_stream_transport import TwoStreamTransportLat
 
+from uncertainty_module.src.base.calib_scaling import CalibScaler
+from uncertainty_module.src.temperature_scaling.temperature_scaling import TemperatureScaler
+from uncertainty_module.action_selection import ActionSelection
+
 class TransporterAgent(LightningModule):
     def __init__(self, name, cfg, train_ds, test_ds):
         super().__init__()
         utils.set_seed(0)
-
+    
         self.device_type = torch.device('cuda' if torch.cuda.is_available() else 'cpu') # this is bad for PL :(
         self.name = name
         self.cfg = cfg
@@ -38,15 +42,41 @@ class TransporterAgent(LightningModule):
         self.bounds = np.array([[0.25, 0.75], [-0.5, 0.5], [0, 0.28]])
 
         self.val_repeats = cfg['train']['val_repeats']
-        self.save_steps = cfg['train']['save_steps']
+
+        if self.cfg['calibration']['enabled']:
+            self.save_steps = cfg['calibration']['save_steps']
+        else:
+            self.save_steps = cfg['train']['save_steps']
 
         self._build_model()
         self._optimizers = {
             'attn': torch.optim.Adam(self.attention.parameters(), lr=self.cfg['train']['lr']),
             'trans': torch.optim.Adam(self.transport.parameters(), lr=self.cfg['train']['lr'])
         }
-        print("Agent: {}, Logging: {}".format(name, cfg['train']['log']))
 
+        if self.cfg['calibration']['enabled']:
+            # self._optimizers = None
+            
+            if self.cfg['calibration']['calib_type'] == 'temperature':
+                self.calib_scaler = TemperatureScaler(device=self.device_type, cfg=self.cfg)
+            else:
+                self.calib_scaler = CalibScaler(device=self.device_type, cfg=self.cfg)
+
+            if self.cfg['calibration']['training']:
+                self.train_ds = test_ds # in training, test_ds is the validation set, set it to validation set in calibration
+
+        if self.cfg['action_selection']['enabled']:
+            self.action_selection = ActionSelection(device=self.device_type, 
+                                                    batch_size=1,
+                                                    enabled=self.cfg['action_selection']['enabled'],
+                                                    attn_tau=self.cfg['action_selection']['attn_tau'],
+                                                    trans_tau=self.cfg['action_selection']['trans_tau'],
+                                                    attn_uaa=self.cfg['action_selection']['attn_uaa'],
+                                                    trans_uaa=self.cfg['action_selection']['trans_uaa']
+                                                    )
+        
+        print("Agent: {}, Logging: {}".format(name, cfg['train']['log']))
+        
     def _build_model(self):
         self.attention = None
         self.transport = None
@@ -175,43 +205,164 @@ class TransporterAgent(LightningModule):
         return err, loss
 
     def training_step(self, batch, batch_idx):
-        self.attention.train()
-        self.transport.train()
+        if self.cfg['calibration']['enabled']:
 
-        frame, _ = batch
+            # import pdb; pdb.set_trace()
+            # # Get training losses
+            # self.attention.eval()
+            # self.transport.eval()
+            
+            frame, _ = batch
+            
+            # get calibration loss:
+            step = self.total_steps + 1
+            
+            img = frame['img']
+            lang_goal = frame['lang_goal']
+            p0 = frame['p0']
+            p1, p1_theta = frame['p1'], frame['p1_theta']
 
-        # Get training losses.
-        step = self.total_steps + 1
-        loss0, err0 = self.attn_training_step(frame)
-        if isinstance(self.transport, Attention):
-            loss1, err1 = self.attn_training_step(frame)
+            # Attention model forward pass.
+            pick_inp = {'inp_img': img, 'lang_goal': lang_goal}
+            pick_conf = self.attn_forward(pick_inp, softmax=False)
+            # scaling attention layer
+
+            pick_conf = self.calib_scaler.scale_attn(pick_conf)
+            # compute attention loss
+            loss0, _err0 = self.calib_scaler.calib_attn_criterion(backprop=self.calib_scaler.training,
+                                                compute_err=True,
+                                                inp=pick_inp,
+                                                out=pick_conf,
+                                                p=frame['p0'],
+                                                theta=frame['p0_theta'])
+            
+            # backpropagate calibration for attention
+            if self.calib_scaler.training:
+                calib_attn_optim = self.calib_scaler._optimizers['attn_calib']
+                self.manual_backward(loss0, calib_attn_optim)
+                calib_attn_optim.step()
+                calib_attn_optim.zero_grad()
+                
+                self.calib_scaler.attn_scheduler.step()
+
+            # Transport model forward pass.
+            place_inp = {'inp_img': img, 'p0': p1, 'lang_goal': lang_goal}
+            place_conf = self.trans_forward(place_inp, softmax=False)
+            # scaling transporter layer
+            place_conf = self.calib_scaler.scale_trans(place_conf)
+
+            # compute transporter loss
+            loss1, _err1 = self.calib_scaler.calib_transport_criterion(backprop=self.calib_scaler.training,
+                                                compute_err=True,
+                                                inp=place_inp,
+                                                output=place_conf,
+                                                p=frame['p0'],
+                                                q=frame['p1'],
+                                                theta=frame['p1_theta'])
+            # import pdb; pdb.set_trace()   
+            # backpropagate calibration for transporter
+            if self.calib_scaler.training:
+                transport_optim = self.calib_scaler._optimizers['trans_calib']
+                self.manual_backward(loss1, transport_optim)
+                transport_optim.step()
+                transport_optim.zero_grad()
+                
+                self.calib_scaler.trans_scheduler.step()
+
+            total_loss = loss0 + loss1
+            # import pdb; pdb.set_trace()           
+            self.log('calib/attn/attn_temperature', self.calib_scaler.attn_temperature)
+            self.log('calib/trans/trans_temperature', self.calib_scaler.trans_temperature)
+            self.log('calib/attn/lr', self.calib_scaler._optimizers['attn_calib'].param_groups[0]['lr'])
+            self.log('calib/trans/lr', self.calib_scaler._optimizers['trans_calib'].param_groups[0]['lr'])
+            self.log('calib/attn/loss', loss0)
+            self.log('calib/trans/loss', loss1)
+            self.log('calib/loss', total_loss)
+            self.log('tr/attn/loss', loss0)
+            self.log('tr/trans/loss', loss1)
+            self.log('tr/loss', total_loss)
+            self.total_steps = step
+
+            self.trainer.train_loop.running_loss.append(total_loss)
+
+            self.check_save_iteration()
+
+            return dict(
+                loss=total_loss,
+            )
+            
         else:
-            loss1, err1 = self.transport_training_step(frame)
-        total_loss = loss0 + loss1
-        self.log('tr/attn/loss', loss0)
-        self.log('tr/trans/loss', loss1)
-        self.log('tr/loss', total_loss)
-        self.total_steps = step
+            self.attention.train()
+            self.transport.train()
 
-        self.trainer.train_loop.running_loss.append(total_loss)
+            frame, _ = batch
 
-        self.check_save_iteration()
+            # Get training losses.
+            step = self.total_steps + 1
+            loss0, err0 = self.attn_training_step(frame)
+            if isinstance(self.transport, Attention):
+                loss1, err1 = self.attn_training_step(frame)
+            else:
+                loss1, err1 = self.transport_training_step(frame)
+            total_loss = loss0 + loss1
+            
+            self.log('tr/attn/loss', loss0)
+            self.log('tr/trans/loss', loss1)
+            self.log('tr/loss', total_loss)
+            self.total_steps = step
 
-        return dict(
-            loss=total_loss,
-        )
+            self.trainer.train_loop.running_loss.append(total_loss)
+
+            self.check_save_iteration()
+
+            return dict(
+                loss=total_loss,
+            )
+
+    # def on_save_checkpoint(self, checkpoint):
+    #     if self.cfg['calibration']['enabled']:
+    #         calib_scaler_keys = [k for k in checkpoint['state_dict'].keys() if k.startswith('calib_scaler.')]
+    #         calib_scaler_state = {k: checkpoint['state_dict'].pop(k) for k in calib_scaler_keys}
+    #         if calib_scaler_state:
+    #             self.calib_scaler.save_parameter(self.trainer.current_epoch, self.trainer.global_step)
+    #     return checkpoint
+    def on_train_start(self):
+        if self.cfg['calibration']['enabled']:
+            print('logging temperature')
+            print(f'attn_temperature: {self.calib_scaler.attn_temperature}, \n trans_temperature: {self.calib_scaler.trans_temperature}')
+            wandb_run = self.logger.experiment
+            wandb_run.log({
+                'calib/attn/attn_temperature': self.calib_scaler.attn_temperature.item(),
+                'calib/trans/trans_temperature': self.calib_scaler.trans_temperature.item()
+            }, step=0, commit=True)
 
     def check_save_iteration(self):
         global_step = self.trainer.global_step
         if (global_step + 1) in self.save_steps:
-            self.trainer.run_evaluation()
-            val_loss = self.trainer.callback_metrics['val_loss']
-            steps = f'{global_step + 1:05d}'
-            filename = f"steps={steps}-val_loss={val_loss:0.8f}.ckpt"
-            checkpoint_path = os.path.join(self.cfg['train']['train_dir'], 'checkpoints')
-            ckpt_path = os.path.join(checkpoint_path, filename)
-            self.trainer.save_checkpoint(ckpt_path)
-
+            # import pdb; pdb.set_trace()
+            if not self.cfg['calibration']['enabled']:
+                self.trainer.run_evaluation()
+                val_loss = self.trainer.callback_metrics['val_loss']
+                steps = f'{global_step + 1:05d}'
+                filename = f"steps={steps}-val_loss={val_loss:0.8f}.ckpt"
+                checkpoint_path = os.path.join(self.cfg['train']['train_dir'], 'checkpoints')
+                ckpt_path = os.path.join(checkpoint_path, filename)
+                self.trainer.save_checkpoint(ckpt_path)
+            else:
+                # return
+                # val_loss = self.trainer.callback_metrics['calib/loss']
+                # steps = f'{global_step + 1:05d}'
+                # filename = f"steps={steps}-val_loss={val_loss:0.8f}.ckpt"
+                # checkpoint_path = os.path.join(self.cfg['train']['train_dir'], 'checkpoints')
+                # ckpt_path = os.path.join(checkpoint_path, filename)
+                # self.trainer.save_checkpoint(ckpt_path)
+                if self.cfg['calibration']['training']:
+                    # calib_scaler_keys = [k for k in checkpoint['state_dict'].keys() if k.startswith('calib_scaler.')]
+                    # calib_scaler_state = {k: checkpoint['state_dict'].pop(k) for k in calib_scaler_keys}
+                    # if calib_scaler_state:
+                    self.calib_scaler.save_parameter(self.trainer.current_epoch, self.trainer.global_step)
+                return
+                        
         if (global_step + 1) % 1000 == 0:
             # save lastest checkpoint
             # print(f"Saving last.ckpt Epoch: {self.trainer.current_epoch} | Global Step: {self.trainer.global_step}")
@@ -290,27 +441,73 @@ class TransporterAgent(LightningModule):
 
     def act(self, obs, info=None, goal=None):  # pylint: disable=unused-argument
         """Run inference and return best action given visual observations."""
-        # Get heightmap from RGB-D images.
-        img = self.test_ds.get_image(obs)
+        
+        if self.cfg['action_selection']['enabled']:
+            # Get heightmap from RGB-D images.
+            img = self.test_ds.get_image(obs)
 
-        # Attention model forward pass.
-        pick_inp = {'inp_img': img}
-        pick_conf = self.attn_forward(pick_inp)
-        pick_conf = pick_conf.detach().cpu().numpy()
-        argmax = np.argmax(pick_conf)
-        argmax = np.unravel_index(argmax, shape=pick_conf.shape)
-        p0_pix = argmax[:2]
-        p0_theta = argmax[2] * (2 * np.pi / pick_conf.shape[2])
+            # Attention model forward pass.
+            pick_inp = {'inp_img': img}
+            
+            if self.cfg['calibration']['enabled']:
+                output = self.attn_forward(pick_inp, softmax=False)
+                output = self.calib_scaler.scale_attn(output)
+                output = F.softmax(output, dim=-1)
+                
+                in_shape = self.in_shape
+                pick_conf = output.reshape([in_shape[0], in_shape[1], 1])
+            else:
+                pick_conf = self.attn_forward(pick_inp)
+            if self.cfg['action_selection']['attn_uaa']:
+                pick_conf = self.action_selection.get_uncertainty_heatmap(pick_conf)
+            pick_conf = pick_conf.detach().cpu().numpy()
+            argmax = np.argmax(pick_conf)
+            argmax = np.unravel_index(argmax, shape=pick_conf.shape)
+            p0_pix = argmax[:2]
+            p0_theta = argmax[2] * (2 * np.pi / pick_conf.shape[2])
 
-        # Transport model forward pass.
-        place_inp = {'inp_img': img, 'p0': p0_pix}
-        place_conf = self.trans_forward(place_inp)
-        place_conf = place_conf.permute(1, 2, 0)
-        place_conf = place_conf.detach().cpu().numpy()
-        argmax = np.argmax(place_conf)
-        argmax = np.unravel_index(argmax, shape=place_conf.shape)
-        p1_pix = argmax[:2]
-        p1_theta = argmax[2] * (2 * np.pi / place_conf.shape[2])
+            # Transport model forward pass.
+            place_inp = {'inp_img': img, 'p0': p0_pix}
+            if self.cfg['calibration']['enabled']:
+                output = self.trans_forward(place_inp, softmax=False)
+                output_shape = output.shape
+                output = output.reshape((1, np.prod(output.shape)))
+                output = self.calib_scaler.scale_trans(output)
+                output = F.softmax(output, dim=-1) # add scaling
+                place_conf = output.reshape(output_shape[1:])
+            else:
+                place_conf = self.trans_forward(place_inp)
+            if self.cfg['action_selection']['trans_uaa']:
+                place_conf = self.action_selection.get_uncertainty_heatmap(place_conf)
+            place_conf = place_conf.permute(1, 2, 0)
+            place_conf = place_conf.detach().cpu().numpy()
+            argmax = np.argmax(place_conf)
+            argmax = np.unravel_index(argmax, shape=place_conf.shape)
+            p1_pix = argmax[:2]
+            p1_theta = argmax[2] * (2 * np.pi / place_conf.shape[2])            
+        
+        else:
+            # Get heightmap from RGB-D images.
+            img = self.test_ds.get_image(obs)
+
+            # Attention model forward pass.
+            pick_inp = {'inp_img': img}
+            pick_conf = self.attn_forward(pick_inp)
+            pick_conf = pick_conf.detach().cpu().numpy()
+            argmax = np.argmax(pick_conf)
+            argmax = np.unravel_index(argmax, shape=pick_conf.shape)
+            p0_pix = argmax[:2]
+            p0_theta = argmax[2] * (2 * np.pi / pick_conf.shape[2])
+
+            # Transport model forward pass.
+            place_inp = {'inp_img': img, 'p0': p0_pix}
+            place_conf = self.trans_forward(place_inp)
+            place_conf = place_conf.permute(1, 2, 0)
+            place_conf = place_conf.detach().cpu().numpy()
+            argmax = np.argmax(place_conf)
+            argmax = np.unravel_index(argmax, shape=place_conf.shape)
+            p1_pix = argmax[:2]
+            p1_theta = argmax[2] * (2 * np.pi / place_conf.shape[2])
 
         # Pixels to end effector poses.
         hmap = img[:, :, 3]
@@ -331,17 +528,76 @@ class TransporterAgent(LightningModule):
 
     def configure_optimizers(self):
         pass
+        # if self.calib_scaler and self.calib_scaler.training:
+        #     return list(self.calib_scaler._optimizers.values())
+        # else:
+        #     return None
 
     def train_dataloader(self):
         return self.train_ds
 
     def val_dataloader(self):
         return self.test_ds
+    
+    def test_dataloader(self):
+        return self.train_ds ## In test mode, we use the train_ds as the test_ds
 
     def load(self, model_path):
         self.load_state_dict(torch.load(model_path)['state_dict'])
         self.to(device=self.device_type)
+        
 
+    
+    def test_step(self, batch, batch_idx):
+        # import pdb; pdb.set_trace()
+        #TODO: figure out attn_forward(inp, softmax=False) and attn_forward(inp)
+        frame, _ = batch
+        
+        # get calibration loss:
+        step = self.total_steps + 1
+        
+        img = frame['img']
+        lang_goal = frame['lang_goal']
+        p0 = frame['p0']
+        p1, p1_theta = frame['p1'], frame['p1_theta']
+
+        # Attention model forward pass.
+        pick_inp = {'inp_img': img, 'lang_goal': lang_goal}
+
+        # eval if pred is correct
+        err0 = self.calib_scaler.calib_attn_eval(attn_forward=self.attn_forward, 
+                                                 in_shape = self.in_shape,
+                                                 inp=pick_inp, 
+                                                 p=frame['p0'], 
+                                                 theta=frame['p0_theta'])
+
+        # Transport model forward pass.
+        place_inp = {'inp_img': img, 'p0': p1, 'lang_goal': lang_goal}
+        
+        # compute transporter loss
+        err1 = self.calib_scaler.calib_trans_eval(trans_forward=self.trans_forward, 
+                                                  in_shape = self.in_shape,
+                                                  inp=place_inp, 
+                                                  q=frame['p1'], 
+                                                  theta=frame['p1_theta'])
+        
+
+        # self.check_save_iteration()
+        # print(f'err0{err0}, err1{err1}')
+        # if err0['dist']==0 or err1['dist']==0:
+        #     import pdb; pdb.set_trace()
+        
+        # self.log('test/attn_err', err0['dist'])
+        # self.log('test/trans_err', err1['dist'])
+
+        return dict(
+            err0=err0,
+            err1=err1
+        )
+    
+    def test_epoch_end(self, all_outputs):
+        return all_outputs
+        # self.calib_scaler.attn_err
 
 class OriginalTransporterAgent(TransporterAgent):
 
@@ -393,8 +649,7 @@ class ClipUNetTransporterAgent(TransporterAgent):
             cfg=self.cfg,
             device=self.device_type,
         )
-
-
+                
 class TwoStreamClipUNetTransporterAgent(TransporterAgent):
 
     def __init__(self, name, cfg, train_ds, test_ds):

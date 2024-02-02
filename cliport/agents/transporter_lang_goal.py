@@ -1,4 +1,5 @@
 import numpy as np
+import torch.nn.functional as F
 
 from cliport.utils import utils
 from cliport.agents.transporter import TransporterAgent
@@ -10,11 +11,13 @@ from cliport.models.streams.two_stream_transport_lang_fusion import TwoStreamTra
 from cliport.models.streams.two_stream_attention_lang_fusion import TwoStreamAttentionLangFusionLat
 from cliport.models.streams.two_stream_transport_lang_fusion import TwoStreamTransportLangFusionLat
 
+from uncertainty_module.src.base.calib_scaling import CalibScaler
+from uncertainty_module.src.temperature_scaling.temperature_scaling import TemperatureScaler
 
 class TwoStreamClipLingUNetTransporterAgent(TransporterAgent):
     def __init__(self, name, cfg, train_ds, test_ds):
         super().__init__(name, cfg, train_ds, test_ds)
-
+        
     def _build_model(self):
         stream_one_fcn = 'plain_resnet'
         stream_two_fcn = 'clip_lingunet'
@@ -35,7 +38,27 @@ class TwoStreamClipLingUNetTransporterAgent(TransporterAgent):
             cfg=self.cfg,
             device=self.device_type,
         )
+        if self.cfg['calibration']['enabled']:
+            # self._optimizers = None
+            
+            if self.cfg['calibration']['calib_type'] == 'temperature':
+                self.calib_scaler = TemperatureScaler(device=self.device_type, cfg=self.cfg)
+            else:
+                self.calib_scaler = CalibScaler(device=self.device_type, cfg=self.cfg)
 
+            if self.cfg['calibration']['training']:
+                self.train_ds = test_ds # in training, test_ds is the validation set, set it to validation set in calibration
+
+        if self.cfg['action_selection']['enabled']:
+            self.action_selection = ActionSelection(device=self.device_type, 
+                                                    batch_size=1,
+                                                    enabled=self.cfg['action_selection']['enabled'],
+                                                    attn_tau=self.cfg['action_selection']['attn_tau'],
+                                                    trans_tau=self.cfg['action_selection']['trans_tau'],
+                                                    attn_uaa=self.cfg['action_selection']['attn_uaa'],
+                                                    trans_uaa=self.cfg['action_selection']['trans_uaa']
+                                                    )
+        
     def attn_forward(self, inp, softmax=True):
         inp_img = inp['inp_img']
         lang_goal = inp['lang_goal']
@@ -76,25 +99,75 @@ class TwoStreamClipLingUNetTransporterAgent(TransporterAgent):
         # Get heightmap from RGB-D images.
         img = self.test_ds.get_image(obs)
         lang_goal = info['lang_goal']
+        # import pdb; pdb.set_trace()
+        # breakpoint()
+        if self.cfg['action_selection']['enabled']:
+            img = self.test_ds.get_image(obs)
+            lang_goal = info['lang_goal']
 
-        # Attention model forward pass.
-        pick_inp = {'inp_img': img, 'lang_goal': lang_goal}
-        pick_conf = self.attn_forward(pick_inp)
-        pick_conf = pick_conf.detach().cpu().numpy()
-        argmax = np.argmax(pick_conf)
-        argmax = np.unravel_index(argmax, shape=pick_conf.shape)
-        p0_pix = argmax[:2]
-        p0_theta = argmax[2] * (2 * np.pi / pick_conf.shape[2])
+            # Attention model forward pass.
+            pick_inp = {'inp_img': img, 'lang_goal': lang_goal}
+            
+            if self.cfg['calibration']['enabled']:
+                output = self.attn_forward(pick_inp, softmax=False)
+                output = self.calib_scaler.scale_attn(output)
+                output = F.softmax(output, dim=-1)
+                
+                in_shape = self.in_shape
+                pick_conf = output.reshape([in_shape[0], in_shape[1], 1])
+            else:
+                pick_conf = self.attn_forward(pick_inp)
+            
+            if self.cfg['action_selection']['attn_uaa']:
+                pick_conf = self.action_selection.get_attn_uncertainty_heatmap(pick_conf.permute(2,0,1).unsqueeze(0))
+                pick_conf = pick_conf.squeeze(0).permute(1,2,0)
+            
+            pick_conf = pick_conf.detach().cpu().numpy()
+            argmax = np.argmax(pick_conf)
+            argmax = np.unravel_index(argmax, shape=pick_conf.shape)
+            p0_pix = argmax[:2]
+            p0_theta = argmax[2] * (2 * np.pi / pick_conf.shape[2])
 
-        # Transport model forward pass.
-        place_inp = {'inp_img': img, 'p0': p0_pix, 'lang_goal': lang_goal}
-        place_conf = self.trans_forward(place_inp)
-        place_conf = place_conf.permute(1, 2, 0)
-        place_conf = place_conf.detach().cpu().numpy()
-        argmax = np.argmax(place_conf)
-        argmax = np.unravel_index(argmax, shape=place_conf.shape)
-        p1_pix = argmax[:2]
-        p1_theta = argmax[2] * (2 * np.pi / place_conf.shape[2])
+            # Transport model forward pass.
+            place_inp = {'inp_img': img, 'p0': p0_pix, 'lang_goal': lang_goal}
+            if self.cfg['calibration']['enabled']:
+                output = self.trans_forward(place_inp, softmax=False)
+                output_shape = output.shape
+                output = output.reshape((1, np.prod(output.shape)))
+                output = self.calib_scaler.scale_trans(output)
+                output = F.softmax(output, dim=-1) # add scaling
+                place_conf = output.reshape(output_shape[1:])
+            else:
+                place_conf = self.trans_forward(place_inp)
+            # breakpoint()
+            if self.cfg['action_selection']['trans_uaa']:
+                place_conf = self.action_selection.get_trans_uncertainty_heatmap(place_conf.unsqueeze(0))
+                place_conf = place_conf.squeeze(0)
+            place_conf = place_conf.permute(1, 2, 0)
+            place_conf = place_conf.detach().cpu().numpy()
+            argmax = np.argmax(place_conf)
+            argmax = np.unravel_index(argmax, shape=place_conf.shape)
+            p1_pix = argmax[:2]
+            p1_theta = argmax[2] * (2 * np.pi / place_conf.shape[2])
+        else:
+            # Attention model forward pass.
+            pick_inp = {'inp_img': img, 'lang_goal': lang_goal}
+            pick_conf = self.attn_forward(pick_inp)
+            pick_conf = pick_conf.detach().cpu().numpy()
+            argmax = np.argmax(pick_conf)
+            argmax = np.unravel_index(argmax, shape=pick_conf.shape)
+            p0_pix = argmax[:2]
+            p0_theta = argmax[2] * (2 * np.pi / pick_conf.shape[2])
+
+            # Transport model forward pass.
+            place_inp = {'inp_img': img, 'p0': p0_pix, 'lang_goal': lang_goal}
+            place_conf = self.trans_forward(place_inp)
+            place_conf = place_conf.permute(1, 2, 0)
+            place_conf = place_conf.detach().cpu().numpy()
+            argmax = np.argmax(place_conf)
+            argmax = np.unravel_index(argmax, shape=place_conf.shape)
+            p1_pix = argmax[:2]
+            p1_theta = argmax[2] * (2 * np.pi / place_conf.shape[2])
 
         # Pixels to end effector poses.
         hmap = img[:, :, 3]
@@ -102,14 +175,15 @@ class TwoStreamClipLingUNetTransporterAgent(TransporterAgent):
         p1_xyz = utils.pix_to_xyz(p1_pix, hmap, self.bounds, self.pix_size)
         p0_xyzw = utils.eulerXYZ_to_quatXYZW((0, 0, -p0_theta))
         p1_xyzw = utils.eulerXYZ_to_quatXYZW((0, 0, -p1_theta))
-
+        # import pdb; pdb.set_trace()
         return {
             'pose0': (np.asarray(p0_xyz), np.asarray(p0_xyzw)),
             'pose1': (np.asarray(p1_xyz), np.asarray(p1_xyzw)),
             'pick': [p0_pix[0], p0_pix[1], p0_theta],
             'place': [p1_pix[0], p1_pix[1], p1_theta],
+            'pick_conf': pick_conf,
+            'place_conf': place_conf,
         }
-
 
 class TwoStreamClipFilmLingUNetLatTransporterAgent(TwoStreamClipLingUNetTransporterAgent):
     def __init__(self, name, cfg, train_ds, test_ds):

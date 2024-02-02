@@ -59,6 +59,7 @@ class Transport(nn.Module):
             output = output.reshape((1, np.prod(output.shape)))
             output = F.softmax(output, dim=-1)
             output = output.reshape(output_shape[1:])
+        # import pdb; pdb.set_trace()
         return output
 
     def transport(self, in_tensor, crop):
