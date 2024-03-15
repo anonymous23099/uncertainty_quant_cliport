@@ -196,23 +196,6 @@ class TemperatureScaler(CalibScaler):
 
         # Ensure the values are in the range [0, 1] (matplotlib requirement for RGB images)
         rgb_image = rgb_image / np.max(rgb_image)
-        # Save the image
-        plt.imsave('/home/bobwu/cliport/shared/rgb_image.png', rgb_image.transpose(1,0,2))
-        # # Visualize pick_conf as a heatmap
-        # import matplotlib.pyplot as plt
-        # plt.imshow(pick_conf.transpose(1,0,2), cmap='hot', interpolation='nearest')
-        
-        # # Add p to the image
-        # p_np = np.round(np.array(p[::-1]), 2)  # Reverse the array before rounding
-        # plt.plot(p_np[1], p_np[0], 'g+', markersize=10, markeredgewidth=2)#, markeredgewidth=1, markeredgecolor='k')
-        # p0_pix_plot = p0_pix[::-1]
-        # plt.plot(p0_pix_plot[1], p0_pix_plot[0], 'b+', markersize=10, markeredgewidth=2)
-        
-
-        # plt.colorbar()
-        # plt.savefig('/home/bobwu/cliport/shared/pick_conf.png')
-        # plt.close()
-        # import pdb; pdb.set_trace()
 
         err = {
             'dist': np.linalg.norm(np.array(p) - p0_pix, ord=1),
@@ -255,7 +238,7 @@ class TemperatureScaler(CalibScaler):
         
 
         plt.colorbar()
-        plt.savefig('/home/bobwu/cliport/shared/place_conf.png')
+        plt.savefig('/home/user/cliport/shared/place_conf.png')
         plt.close()
         # import pdb; pdb.set_trace()
 
