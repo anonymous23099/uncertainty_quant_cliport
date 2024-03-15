@@ -67,11 +67,21 @@ calibration:
   calib_trans_lr: 0.1
   use_hard_temp: False
   hard_temp: 1
+  scaling_in_eval: True
   
   n_demos: 100
   n_steps: 20000 #100 #1000 #201000 # use 601000 for multi-task models
   
   # save_steps should be smaller than n_steps
   save_steps: [100, 1000, 2000, 3000, 4000, 5000, 7000, 10000]
-  scaler_log_root: ${root_dir}/data/scalers
+  
   scaler_log_name: ${train.task}-${train.agent}-n${train.n_demos}-calib
+  scaler_log_root:  ${root_dir}/shared/${train.exp_folder}/${calibration.scaler_log_name}
+
+
+action_selection:
+  enabled: False
+  attn_uaa: False
+  trans_uaa: False
+  attn_tau: 5
+  trans_tau: 5

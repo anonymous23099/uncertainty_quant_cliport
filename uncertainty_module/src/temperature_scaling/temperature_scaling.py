@@ -21,27 +21,25 @@ class TemperatureScaler(CalibScaler):
         self.calib_trans_lr = self.cfg['calibration']['calib_trans_lr']
         
         self.use_hard_temp = self.cfg['calibration']['use_hard_temp']
-        self.hard_temp = self.cfg['calibration']['hard_temp']
 
         self.attn_n_rotations = 1
         self.trans_n_rotations = self.cfg['train']['n_rotations']
         self.n_rotations = self.trans_n_rotations
         
         self.n_demos = cfg['calibration']['n_demos']
-        self.step_size = self.n_demos * 20 # update lr per 10 epochs
+        self.step_size = self.n_demos * 3 # 20 # update lr per 10 epochs
         self.scaling_in_eval = cfg['calibration']['scaling_in_eval']
         
         print('temp logging dir:', self.scaler_log_root)
+        # breakpoint()
         if self.use_hard_temp:
             print('using hard temp')
-            print('hard_temp', self.hard_temp)
-            self.training = False
-            self.attn_temperature = self.hard_temp * torch.nn.Parameter(torch.ones(1, device=self.device))
-            self.trans_temperature = self.hard_temp * torch.nn.Parameter(torch.ones(1, device=self.device))
+            # self.training = False
+            self.attn_temperature = torch.nn.Parameter(torch.ones(1, device=self.device))
+            self.trans_temperature = torch.nn.Parameter(torch.ones(1, device=self.device))
         else:
             self.attn_temperature = torch.nn.Parameter(torch.ones(1, device=self.device))
             self.trans_temperature = torch.nn.Parameter(torch.ones(1, device=self.device))
-
 
         if self.training:
             self._optimizers = {
@@ -57,8 +55,12 @@ class TemperatureScaler(CalibScaler):
         else:
             self._optimizers = None
 
-        self.saving_dir = os.path.join(self.cfg['train']['train_dir'], 'calib_params.pth')
-        
+        self.file_name = self.cfg['train']['task']+'_calib_params.pth'
+        # load the temperature of unseen task with seen task
+        self.file_name = self.file_name.replace('unseen', 'seen')
+        print('file_name', self.file_name)
+        # self.saving_dir = os.path.join(self.cfg['calibration']['scaler_log_root'], )
+        self.saving_dir = os.path.join(self.cfg['train']['train_dir'], self.file_name)
         # if not self.training:
         #     self.attn_err = []
         #     self.trans_err = []
@@ -159,10 +161,6 @@ class TemperatureScaler(CalibScaler):
     
     def scale_trans(self, logits):
         return logits/self.trans_temperature
-
-    # def training_step(self, logits, labels):
-    #     pass
-    #     # return total_loss
 
     def scale_logits(self, logits):
         if self.temperature is None:
@@ -288,13 +286,17 @@ class TemperatureScaler(CalibScaler):
                 self._global_step = state['global_step']
                 print('loading global_step', self._global_step)
                 print('loading epoch', self._current_epoch)
+                print('loaded temperature. attn: {}, trans: {}'.format(self.attn_temperature, self.trans_temperature))
             except Exception as e:
                 print(f"Error loading parameters: {e}")
         else:
             self._current_epoch = 0
             self._global_step = 0
             print(f"No parameters found at {self.saving_dir}")
-            
+            if self.training:
+                print('Initializing attn_temperature and trans_temperature to 1.0')
+            else:
+                exit()
     def get_current_epoch(self):
         return self._current_epoch
 

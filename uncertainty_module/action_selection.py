@@ -20,7 +20,8 @@ class ActionSelection:
                 sigma: float = 3,
                 uncertainty_measure: bool = False,
                 attn_uaa: bool = False,
-                trans_uaa: bool = False
+                trans_uaa: bool = False,
+                masking: bool = False
                 ):
         self.device = device
 
@@ -32,6 +33,7 @@ class ActionSelection:
         self._channel_num = channel_num
         self._attn_tau = attn_tau
         self._trans_tau = trans_tau
+        self.masking = masking
 
         self.log_dir = log_dir
         self.enabled = enabled
@@ -83,14 +85,25 @@ class ActionSelection:
 
 
     def get_attn_uncertainty_heatmap(self, hm):
-        # mask = hm <= 1/220**2
+        
+        mean_thresh = 1/np.prod(hm.shape[1:])
+        batch_mask = hm >= mean_thresh
         # hm[mask] = 0
-        return self.attn_conv(hm) #/self._tau**2
+        # breakpoint()
+        if self.masking:
+            return self.attn_conv(hm) * batch_mask
+        else:
+            return self.attn_conv(hm) #/self._tau**2
             
     def get_trans_uncertainty_heatmap(self, hm):
         # mask = hm <= 1/220**2
         # hm[mask] = 0
-        return self.trans_conv(hm) #/self._tau**2
+        mean_thresh = 1/np.prod(hm.shape[1:])
+        batch_mask = hm >= mean_thresh
+        if self.masking:
+            return self.trans_conv(hm) * batch_mask
+        else:
+            return self.trans_conv(hm) #/self._tau**2
     
     # Define the 2D Gaussian function
     def _init_with_2Dgaussian(self):

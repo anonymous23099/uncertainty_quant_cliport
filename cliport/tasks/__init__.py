@@ -41,6 +41,11 @@ from cliport.tasks.towers_of_hanoi_seq import TowersOfHanoiSeqSeenColors
 from cliport.tasks.towers_of_hanoi_seq import TowersOfHanoiSeqUnseenColors
 from cliport.tasks.towers_of_hanoi_seq import TowersOfHanoiSeqFull
 
+from cliport.tasks.stack_block_pyramid_seq_diff_sizes import StackBlockPyramidSeqSeenColorsDiffSizes
+from cliport.tasks.assembling_kits_seq_diff_sizes import AssemblingKitsSeqSeenColorsDiffSizes
+from cliport.tasks.packing_google_objects_diff_sizes import PackingSeenGoogleObjectsSeqDiffSizes
+from cliport.tasks.packing_google_objects_diff_sizes import PackingSeenGoogleObjectsGroupDiffSizes
+
 names = {
     # demo conditioned
     'align-box-corner': AlignBoxCorner,
@@ -84,4 +89,9 @@ names = {
     'towers-of-hanoi-seq-seen-colors': TowersOfHanoiSeqSeenColors,
     'towers-of-hanoi-seq-unseen-colors': TowersOfHanoiSeqUnseenColors,
     'towers-of-hanoi-seq-full': TowersOfHanoiSeqFull,
+    
+    'stack-block-pyramid-seq-seen-colors-diff-sizes': StackBlockPyramidSeqSeenColorsDiffSizes,
+    'assembling-kits-seq-seen-colors-diff-sizes': AssemblingKitsSeqSeenColorsDiffSizes,
+    'packing-seen-google-objects-seq-diff-sizes': PackingSeenGoogleObjectsSeqDiffSizes,
+    'packing-seen-google-objects-group-diff-sizes': PackingSeenGoogleObjectsGroupDiffSizes
 }

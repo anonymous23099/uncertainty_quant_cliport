@@ -56,7 +56,8 @@ class TwoStreamClipLingUNetTransporterAgent(TransporterAgent):
                                                     attn_tau=self.cfg['action_selection']['attn_tau'],
                                                     trans_tau=self.cfg['action_selection']['trans_tau'],
                                                     attn_uaa=self.cfg['action_selection']['attn_uaa'],
-                                                    trans_uaa=self.cfg['action_selection']['trans_uaa']
+                                                    trans_uaa=self.cfg['action_selection']['trans_uaa'],
+                                                    masking=self.cfg['action_selection']['masking']
                                                     )
         
     def attn_forward(self, inp, softmax=True):
@@ -107,7 +108,6 @@ class TwoStreamClipLingUNetTransporterAgent(TransporterAgent):
 
             # Attention model forward pass.
             pick_inp = {'inp_img': img, 'lang_goal': lang_goal}
-            
             if self.cfg['calibration']['enabled']:
                 output = self.attn_forward(pick_inp, softmax=False)
                 output = self.calib_scaler.scale_attn(output)

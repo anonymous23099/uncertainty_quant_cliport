@@ -32,8 +32,8 @@ exp_folder: exps
 data_dir: ${root_dir}/data
 assets_root: ${root_dir}/cliport/environments/assets/
 
-model_path: ${model_dir}/${exp_folder}/${model_task}-${agent}-n${train_demos}-uaa/checkpoints/ # path to pre-trained models
-train_config: ${model_dir}/${exp_folder}/${model_task}-${agent}-n${train_demos}-uaa/.hydra/config.yaml # path to train config
+model_path: ${model_dir}/${exp_folder}/${model_task}-${agent}-n${train_demos}-calib/checkpoints/ # path to pre-trained models
+train_config: ${model_dir}/${exp_folder}/${model_task}-${agent}-n${train_demos}-calib/.hydra/config.yaml # path to train config
 save_path: ${model_dir}/${exp_folder}/${eval_task}-${agent}-n${train_demos}-uaa/checkpoints/ # path to save results
 results_path: ${model_dir}/${exp_folder}/${eval_task}-${agent}-n${train_demos}-uaa/checkpoints/ # path to existing results
 
@@ -48,16 +48,16 @@ record:
   video_width: 720
 
 
-# calibration:
-#   enabled: False
+calibration:
+  enabled: True # make this true by default
 #   datasets_type: 'single'
 #   training: True
 #   calib_type: temperature
 #   training_iter: 1000
 #   calib_attn_lr: 0.1
 #   calib_trans_lr: 0.1
-#   use_hard_temp: False
-#   hard_temp: 1
+  use_hard_temp: False
+  hard_temp: 1
   
 #   n_demos: 100
 #   n_steps: 20000 #100 #1000 #201000 # use 601000 for multi-task models
@@ -75,6 +75,7 @@ action_selection:
   trans_uaa: False
   attn_tau: 5
   trans_tau: 5
+  masking: False
 
 visualization:
   enabled: False

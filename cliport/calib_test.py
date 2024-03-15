@@ -100,10 +100,15 @@ def main(vcfg):
             # Initialize agent.
             utils.set_seed(train_run, torch=True)
             tcfg['action_selection'] = vcfg['action_selection'] # update action selection in tcfg
-            
+            tcfg['train']['task'] = vcfg['eval_task']
+
+            tcfg['calibration']['use_hard_temp'] = vcfg['calibration']['use_hard_temp']
+            tcfg['calibration']['hard_temp'] = vcfg['calibration']['hard_temp']
+
             agent = agents.names[vcfg['agent']](name, tcfg, None, ds)
             # import pdb; pdb.set_trace()
             # Load checkpoint
+
             agent.load(model_file)
             print(f"Loaded: {model_file}")
 
@@ -113,7 +118,7 @@ def main(vcfg):
             visualization = vcfg['visualization']['enabled']
             save_failed = vcfg['visualization']['save_failed']
             
-
+           
 
             # Run testing and save total rewards with last transition info.
             for i in range(0, n_demos):
@@ -161,7 +166,6 @@ def main(vcfg):
                     total_reward += reward
                     print(f'Total Reward: {total_reward:.3f} | Done: {done}\n')
                     if visualization:
-                        # breakpoint()
                         lang_goal_list.append(lang_goal)
                         obs_list.append(agent.test_ds.get_image(curr_obs)[:,:,:3])
                         pick_conf_list.append(act['pick_conf'])
@@ -170,21 +174,19 @@ def main(vcfg):
                         break
                 
                 if visualization:
-                    # if not save_failed or (save_failed and 1-total_reward>10e-3):
-                    failed_list = [10, 12, 33, 34, 44, 45, 76, 81, 84, 86]
-                    if (i+1) in failed_list: 
+                    if not save_failed or (save_failed and 1-total_reward>10e-3):
+                    # failed_list = [10, 12, 33, 34, 44, 45, 76, 81, 84, 86] # stack-block-pyramid-seq-seen-colors
+                    # if (i+1) in failed_list: 
                         viz_path = os.path.join(vcfg['visualization']['dir'], f'{name}')
                         step_reward = '{}-{:.2f}'.format(i+1, total_reward)
                         viz_path = os.path.join(viz_path, step_reward)
                         if not os.path.exists(viz_path):
                             os.makedirs(viz_path)
-                        # breakpoint()
                         for step_idx, confs in enumerate(zip(obs_list, pick_conf_list, place_conf_list)):
                             rgb, pick_conf, place_conf = confs[0], confs[1], confs[2]
                             lang_goal = lang_goal_list[step_idx]
                             # visualize_pick_conf(pick_conf, viz_path, step_idx)
                             # visualize_place_conf(place_conf, viz_path, step_idx)
-                            # breakpoint()
                             save_all_visualizations(lang_goal, rgb, pick_conf, place_conf, viz_path, step_idx)
                 
                 results.append((total_reward, info))

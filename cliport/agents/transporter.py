@@ -61,7 +61,6 @@ class TransporterAgent(LightningModule):
                 self.calib_scaler = TemperatureScaler(device=self.device_type, cfg=self.cfg)
             else:
                 self.calib_scaler = CalibScaler(device=self.device_type, cfg=self.cfg)
-
             if self.cfg['calibration']['training']:
                 self.train_ds = test_ds # in training, test_ds is the validation set, set it to validation set in calibration
 
@@ -366,7 +365,10 @@ class TransporterAgent(LightningModule):
         if (global_step + 1) % 1000 == 0:
             # save lastest checkpoint
             # print(f"Saving last.ckpt Epoch: {self.trainer.current_epoch} | Global Step: {self.trainer.global_step}")
-            self.save_last_checkpoint()
+            if self.cfg['calibration']['training']:
+                pass
+            else:
+                self.save_last_checkpoint()
 
     def save_last_checkpoint(self):
         checkpoint_path = os.path.join(self.cfg['train']['train_dir'], 'checkpoints')
@@ -543,7 +545,19 @@ class TransporterAgent(LightningModule):
         return self.train_ds ## In test mode, we use the train_ds as the test_ds
 
     def load(self, model_path):
-        self.load_state_dict(torch.load(model_path)['state_dict'])
+        if self.cfg['calibration']['use_hard_temp']:
+            params = torch.load(model_path)['state_dict']
+            # params.pop('calib_scaler.attn_temperature')
+            # params.pop('calib_scaler.trans_temperature')
+            params['calib_scaler.attn_temperature'] = torch.nn.Parameter(torch.ones(1, device=self.device))
+            params['calib_scaler.trans_temperature'] = torch.nn.Parameter(torch.ones(1, device=self.device))
+            self.load_state_dict(params)
+            pass
+        else:
+            self.load_state_dict(torch.load(model_path)['state_dict'])
+            if self.cfg['calibration']['enabled']:
+                self.calib_scaler.load_parameter()
+
         self.to(device=self.device_type)
         
 
