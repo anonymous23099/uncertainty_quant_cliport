@@ -1,5 +1,50 @@
 # CLIPort
 
+## Installation
+You can follow the exact installation instruction in the [CLIPort repository](https://github.com/cliport/cliport?tab=readme-ov-file) to prepare the environment
+
+## Model Preparation
+Download the pre-trained weights trained from the original CLIPort paper
+[Google Drive Folder](https://drive.google.com/drive/folders/0B2LlLwoO3nfZfk1TZjhhbXN2dDFSSzktdU5UN3MtbGxfYXNBWlR2SDN0OUdzMkVrdnU3TU0?resourcekey=0-upqOBPNOlOrAzI7FnQuCiQ&usp=share_link). In this paper, we use ```multi-language-conditioned-cliport-n1000-train```. 
+Once you download the folder, create and put it under the ```cliport/exps``` folder, rename it to ```multi-language-conditioned-cliport-n1000-calib``` and copy the temperatures from [here](https://drive.google.com/drive/folders/1xFrBwAYKA9W8ICx4gIK0wGgI25wuvevf?usp=sharing) to the folder you downloaded.
+
+## Data Generation
+For in-distribution tasks:
+```
+tasks=("stack-block-pyramid-seq-seen-colors"
+       "packing-seen-google-objects-seq"
+       "packing-seen-google-objects-group"
+       "assembling-kits-seq-seen-colors")
+
+for task in "${tasks[@]}"
+do
+  python cliport/demos.py n=1000 \
+                          task=$task \
+                          mode=test
+```
+For out-of-distribution tasks:
+```
+tasks=("stack-block-pyramid-seq-seen-colors-diff-sizes"
+       "assembling-kits-seq-seen-colors-diff-sizes")
+for task in "${tasks[@]}"
+do
+  python cliport/demos.py n=1000 \
+                          task=$task \
+                          mode=test
+```
+## Evaluation
+Now you can run the evaluation code with the dataset you just created by running the bash files below:
+```
+bash eval_in_dist.sh
+```
+```
+bash eval_out_of_dist.sh
+```
+Note you can alter the ```eval_tasks``` in those bash files to only run the task of interest
+
+You will be able to find the results in the ```cliport/exps``` folder after the code finishes execution.
+<!-- # CLIPort
+
 [**CLIPort: What and Where Pathways for Robotic Manipulation**](https://arxiv.org/pdf/2109.12098.pdf)  
 [Mohit Shridhar](https://mohitshridhar.com/), [Lucas Manuelli](http://lucasmanuelli.com/), [Dieter Fox](https://homes.cs.washington.edu/~fox/)  
 [CoRL 2021](https://www.robot-learning.org/) 
@@ -408,4 +453,4 @@ Changes: Used as is in [unet.py](cliport/models/core/unet.py). Note: This part o
 
 ## Questions or Issues?
 
-Please file an issue with the issue tracker.  
+Please file an issue with the issue tracker.   -->
